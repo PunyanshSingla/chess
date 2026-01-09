@@ -9,7 +9,7 @@ import type{ PieceColor, PieceType, GameMode, Difficulty } from './types';
 import { soundEngine } from './utils/sound';
 import { getBestMove } from './utils/simpleEngine';
 import clsx from 'clsx';
-import { io, Socket } from 'socket.io-client';
+import { io } from 'socket.io-client';
 
 const socket = io(import.meta.env.VITE_BACKEND_URL || `http://${window.location.hostname}:3001`, {
   autoConnect: false
@@ -148,7 +148,7 @@ function App() {
         setPlayerColor('w');
     });
 
-    socket.on('game_start', ({ white, black }: { white: string; black: string }) => {
+    socket.on('game_start', ({  black }: { white: string; black: string }) => {
         setIsOnlineGameStarted(true);
         setView('game');
         // If I am not white (creator), I am black
