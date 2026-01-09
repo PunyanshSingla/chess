@@ -4,11 +4,16 @@ import { Board } from './components/Board.tsx';
 import { MoveHistory } from './components/MoveHistory.tsx';
 import { CapturedPieces } from './components/CapturedPieces.tsx';
 import { MainMenu } from './components/MainMenu.tsx';
-import { RotateCcw, Trophy, Crown, Swords, ArrowLeft } from 'lucide-react';
+import { RotateCcw, Trophy, Crown, Swords, ArrowLeft, Copy, Check } from 'lucide-react';
 import type{ PieceColor, PieceType, GameMode, Difficulty } from './types';
 import { soundEngine } from './utils/sound';
 import { getBestMove } from './utils/simpleEngine';
 import clsx from 'clsx';
+import { io, Socket } from 'socket.io-client';
+
+const socket = io(import.meta.env.VITE_BACKEND_URL || `http://${window.location.hostname}:3001`, {
+  autoConnect: false
+});
 
 function App() {
   // View State
@@ -21,6 +26,14 @@ function App() {
   const [fen, setFen] = useState(game.fen()); 
   const [captured, setCaptured] = useState<{w: {type: PieceType, color: PieceColor}[], b: {type: PieceType, color: PieceColor}[]}>({w: [], b: []});
   
+  // Online State
+  const [roomId, setRoomId] = useState('');
+  const [playerColor, setPlayerColor] = useState<PieceColor>('w');
+  const [isOnlineGameStarted, setIsOnlineGameStarted] = useState(false);
+  const [joinRoomId, setJoinRoomId] = useState('');
+  const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
+  
   // Ref to prevent bot moving twice or during renders
   const isBotThinking = useRef(false);
 
@@ -28,15 +41,34 @@ function App() {
     setGameMode(mode);
     if (diff) setDifficulty(diff);
     resetGame();
-    setView('game');
+    
+    if (mode === 'online') {
+       socket.connect();
+       // Don't switch view yet, wait for room selection
+    } else {
+       setView('game');
+    }
   };
 
   const returnToMenu = () => {
     setView('menu');
+    // Disconnect socket if leaving online mode
+    if (gameMode === 'online') {
+        socket.disconnect();
+        setRoomId('');
+        setIsOnlineGameStarted(false);
+        setJoinRoomId('');
+        setError('');
+    }
   };
 
   const makeMove = useCallback((move: { from: string; to: string; promotion?: string }) => {
     try {
+      // For online games, check turn
+      if (gameMode === 'online' && game.turn() !== playerColor) {
+        return false;
+      }
+
       const result = game.move(move);
       if (result) {
         setFen(game.fen());
@@ -59,13 +91,18 @@ function App() {
                 [result.color]: [...prev[result.color], { type: result.captured as PieceType, color: result.color === 'w' ? 'b' : 'w' }]
             }));
         }
+        
+        if (gameMode === 'online') {
+           socket.emit('move', { roomId, move, fen: game.fen() });
+        }
+
         return true;
       }
     } catch (e) {
       return false;
     }
     return false;
-  }, [game]);
+  }, [game, gameMode, playerColor, roomId]);
 
   // Bot Logic Effect
   useEffect(() => {
@@ -104,6 +141,61 @@ function App() {
     }
   }, [fen, gameMode, difficulty, game, makeMove]);
 
+  // Socket Logic
+  useEffect(() => {
+    socket.on('room_created', (id: string) => {
+        setRoomId(id);
+        setPlayerColor('w');
+    });
+
+    socket.on('game_start', ({ white, black }: { white: string; black: string }) => {
+        setIsOnlineGameStarted(true);
+        setView('game');
+        // If I am not white (creator), I am black
+        if (socket.id === black) {
+            setPlayerColor('b');
+        }
+    });
+
+    socket.on('move_received', ({ move }: { move: { from: string; to: string; promotion?: string }; fen: string }) => {
+        // Apply move from opponent
+        game.move(move);
+        setFen(game.fen());
+        // Handle sounds
+        if (game.isGameOver()) soundEngine.playGameEnd();
+        else if (game.inCheck()) soundEngine.playCheck();
+        else soundEngine.playMove(); // Simplified sound for remote move
+    });
+
+    socket.on('error', (msg: string) => {
+        setError(msg);
+    });
+
+    return () => {
+        socket.off('room_created');
+        socket.off('game_start');
+        socket.off('move_received');
+        socket.off('error');
+    };
+  }, [game]);
+
+  const createRoom = () => {
+      socket.emit('create_room');
+  };
+
+  const joinRoom = () => {
+      if (joinRoomId) {
+          socket.emit('join_room', joinRoomId);
+          setRoomId(joinRoomId);
+      }
+  };
+    
+  const copyRoomId = () => {
+      navigator.clipboard.writeText(roomId);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+  };
+
   const resetGame = () => {
     const newGame = new Chess();
     setGame(newGame);
@@ -127,7 +219,12 @@ function App() {
   }
 
   let statusColor = "text-slate-200";
-  let statusText = `${turn === 'w' ? "White's" : "Black's"} Turn`;
+  let statusText = '';
+  if (gameMode === 'online') {
+      statusText = turn === playerColor ? "Your Turn" : "Opponent's Turn";
+  } else {
+      statusText = `${turn === 'w' ? "White's" : "Black's"} Turn`;
+  }
   
   if (winner) {
     statusText = `Checkmate! ${winner} Wins!`;
@@ -140,12 +237,84 @@ function App() {
     statusColor = "text-red-400";
   }
 
+  const isFlipped = gameMode === 'online' && playerColor === 'b';
+
   // --- RENDER ---
 
   if (view === 'menu') {
     return (
       <div className="min-h-screen bg-slate-950 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900 via-slate-950 to-black text-slate-100 flex flex-col items-center justify-center font-sans selection:bg-blue-500/30">
-        <MainMenu onStartGame={startGame} />
+        {!roomId && !isOnlineGameStarted && gameMode === 'online' ? (
+             <div className="w-full max-w-md p-6 bg-slate-800 rounded-xl border border-slate-700 shadow-xl animate-in fade-in zoom-in duration-300">
+                <button 
+                  onClick={() => setGameMode('friend')} 
+                  className="mb-4 text-slate-400 hover:text-white flex items-center gap-2 text-sm"
+                >
+                  <ArrowLeft size={16} /> Back
+                </button>
+                <h2 className="text-2xl font-bold mb-6 text-center">Online Multiplayer</h2>
+                
+                {error && <div className="bg-red-500/10 border border-red-500/50 text-red-400 p-3 rounded-lg mb-4 text-sm text-center">{error}</div>}
+
+                <div className="space-y-4">
+                    <button 
+                        onClick={createRoom}
+                        className="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold transition-all"
+                    >
+                        Create Room
+                    </button>
+                    
+                    <div className="relative flex items-center py-2">
+                        <div className="flex-grow border-t border-slate-700"></div>
+                        <span className="flex-shrink mx-4 text-slate-500 text-sm">Or Join</span>
+                        <div className="flex-grow border-t border-slate-700"></div>
+                    </div>
+
+                    <div className="flex gap-2">
+                        <input 
+                            type="text" 
+                            placeholder="Enter Room ID" 
+                            value={joinRoomId}
+                            onChange={(e) => setJoinRoomId(e.target.value.toUpperCase())}
+                            className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 focus:outline-none focus:border-blue-500 font-mono tracking-wider"
+                        />
+                        <button 
+                            onClick={joinRoom}
+                            className="px-6 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-bold transition-all"
+                        >
+                            Join
+                        </button>
+                    </div>
+                </div>
+             </div>
+        ) : roomId && !isOnlineGameStarted && gameMode === 'online' ? (
+            <div className="w-full max-w-md p-8 bg-slate-800 rounded-xl border border-slate-700 shadow-xl animate-in fade-in zoom-in duration-300 text-center">
+                 <h2 className="text-2xl font-bold mb-2">Room Created</h2>
+                 <p className="text-slate-400 mb-6">Share this ID with your friend</p>
+                 
+                 <button 
+                    onClick={copyRoomId}
+                    className="w-full bg-slate-900 border border-slate-700 p-4 rounded-lg flex items-center justify-between mb-6 group hover:border-blue-500 transition-colors"
+                 >
+                    <span className="font-mono text-2xl font-bold tracking-widest text-blue-400">{roomId}</span>
+                    {copied ? <Check className="text-green-500" /> : <Copy className="text-slate-500 group-hover:text-blue-500" />}
+                 </button>
+
+                 <div className="flex items-center justify-center gap-2 text-slate-500 text-sm animate-pulse">
+                    <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                    Waiting for opponent to join...
+                 </div>
+                 
+                 <button 
+                  onClick={returnToMenu}
+                  className="mt-8 text-slate-500 hover:text-white text-sm"
+                 >
+                  Cancel
+                 </button>
+            </div>
+        ) : (
+            <MainMenu onStartGame={startGame} />
+        )}
       </div>
     );
   }
@@ -178,22 +347,24 @@ function App() {
         {/* Main Game Area */}
         <div className="flex flex-col gap-3 w-full max-w-[550px] mx-auto lg:mx-0">
           
-          {/* Top Player Info (Black) */}
+          {/* Top Player Info */}
           <div className="bg-slate-800/40 backdrop-blur-sm p-3 rounded-xl border border-slate-700/50 flex justify-between items-center shadow-lg">
              <div className="flex items-center gap-3">
-               <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-lg flex items-center justify-center border shadow-inner transition-colors bg-black border-slate-600">
-                  <div className="w-3 h-3 bg-white rounded-full shadow-[0_0_5px_rgba(255,255,255,0.5)]" />
+               <div className={clsx("w-8 h-8 sm:w-10 sm:h-10 rounded-lg flex items-center justify-center border shadow-inner transition-colors", 
+                  isFlipped ? "bg-white border-slate-200" : "bg-black border-slate-600"
+               )}>
+                  <div className={clsx("w-3 h-3 rounded-full", isFlipped ? "bg-black" : "bg-white shadow-[0_0_5px_rgba(255,255,255,0.5)]")} />
                </div>
                <div>
                   <div className="font-bold text-slate-200 leading-tight text-sm sm:text-base">
-                    {gameMode === 'bot' ? 'Computer' : 'Black'}
+                    {gameMode === 'online' ? 'Opponent' : (gameMode === 'bot' ? 'Computer' : (isFlipped ? 'White' : 'Black'))}
                   </div>
                   <div className="text-[10px] font-medium uppercase tracking-wider text-slate-500">
-                     {gameMode === 'bot' ? `Level: ${difficulty}` : 'Player 2'}
+                     {gameMode === 'online' ? (isFlipped ? 'White' : 'Black') : (gameMode === 'bot' ? `Level: ${difficulty}` : 'Player 2')}
                   </div>
                </div>
              </div>
-             <CapturedPieces pieces={captured.w} playerColor="w" />
+             <CapturedPieces pieces={isFlipped ? captured.b : captured.w} playerColor={isFlipped ? 'b' : 'w'} />
           </div>
 
           {/* The Board */}
@@ -201,23 +372,29 @@ function App() {
             <Board 
               game={game} 
               onMove={makeMove} 
-              orientation="w"
+              orientation={gameMode === 'online' ? playerColor : "w"}
               isGameOver={isGameOver}
             />
           </div>
 
-          {/* Bottom Player Info (White) */}
+          {/* Bottom Player Info */}
           <div className="bg-slate-800/40 backdrop-blur-sm p-3 rounded-xl border border-slate-700/50 flex justify-between items-center shadow-lg">
              <div className="flex items-center gap-3">
-               <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-lg flex items-center justify-center border shadow-inner transition-colors bg-white border-slate-200">
-                  <div className="w-3 h-3 bg-black rounded-full" />
+               <div className={clsx("w-8 h-8 sm:w-10 sm:h-10 rounded-lg flex items-center justify-center border shadow-inner transition-colors", 
+                  isFlipped ? "bg-black border-slate-600" : "bg-white border-slate-200"
+               )}>
+                  <div className={clsx("w-3 h-3 rounded-full", isFlipped ? "bg-white shadow-[0_0_5px_rgba(255,255,255,0.5)]" : "bg-black")} />
                </div>
                <div>
-                  <div className="font-bold text-slate-200 leading-tight text-sm sm:text-base">White</div>
-                  <div className="text-[10px] font-medium uppercase tracking-wider text-slate-500">Player 1</div>
+                  <div className="font-bold text-slate-200 leading-tight text-sm sm:text-base">
+                    {gameMode === 'online' ? 'You' : (isFlipped ? 'Black' : 'White')}
+                  </div>
+                  <div className="text-[10px] font-medium uppercase tracking-wider text-slate-500">
+                    {gameMode === 'online' ? (isFlipped ? 'Black' : 'White') : 'Player 1'}
+                  </div>
                </div>
              </div>
-             <CapturedPieces pieces={captured.b} playerColor="b" />
+             <CapturedPieces pieces={isFlipped ? captured.w : captured.b} playerColor={isFlipped ? 'w' : 'b'} />
           </div>
 
           {/* Controls */}

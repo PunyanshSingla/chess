@@ -18,5 +18,5 @@ export interface Move {
   promotion?: string;
 }
 
-export type GameMode = 'friend' | 'bot';
+export type GameMode = 'friend' | 'bot' | 'online';
 export type Difficulty = 'easy' | 'medium' | 'hard' | 'impossible';

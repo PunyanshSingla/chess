@@ -48,6 +48,19 @@ export const MainMenu: React.FC<MainMenuProps> = ({ onStartGame }) => {
               <p className="text-sm text-slate-400">Challenge our offline engine</p>
             </div>
           </button>
+
+          <button
+            onClick={() => onStartGame('online')}
+            className="group relative flex items-center p-6 bg-slate-800 border border-slate-700 hover:border-green-500 rounded-xl transition-all hover:bg-slate-750 hover:shadow-xl hover:-translate-y-1"
+          >
+            <div className="bg-green-500/20 p-4 rounded-full mr-5 group-hover:bg-green-500/30 transition-colors">
+              <Zap className="w-8 h-8 text-green-400" />
+            </div>
+            <div className="text-left">
+              <h3 className="text-xl font-bold text-white mb-1">Play Online</h3>
+              <p className="text-sm text-slate-400">Challenge a friend remotely</p>
+            </div>
+          </button>
         </div>
       ) : (
         <div className="w-full">
