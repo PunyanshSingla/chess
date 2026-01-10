@@ -5,6 +5,7 @@ The backend (`/server`) is a Node.js app.
 1.  **Hosting**: Use Render, Railway, or Heroku.
 2.  **Config**: The server listens on `process.env.PORT`.
 3.  **Command**: `node index.js`.
+4.  **CRITICAL**: Do **NOT** deploy the backend to Vercel or Netlify/AWS Lambda (Serverless). These platforms do not support persistent WebSocket connections or in-memory state, which will cause the game to disconnect and desynchronize. **YOU MUST USE RENDER, RAILWAY, OR HEROKU.**
 
 ## 2. Deploying the Frontend
 The frontend (`/`) is a Vite React app.

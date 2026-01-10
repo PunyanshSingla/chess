@@ -12,7 +12,9 @@ import clsx from 'clsx';
 import { io } from 'socket.io-client';
 
 const socket = io(import.meta.env.VITE_BACKEND_URL || `http://${window.location.hostname}:3001`, {
-  autoConnect: false
+  autoConnect: false,
+  reconnection: true,
+  transports: ['websocket', 'polling'] // Prefer websocket, fall back to polling if needed (or force websocket: ['websocket'])
 });
 
 function App() {
@@ -37,13 +39,29 @@ function App() {
   // Ref to prevent bot moving twice or during renders
   const isBotThinking = useRef(false);
 
+  // Check for reconnection
+  useEffect(() => {
+    const handleConnect = () => {
+      // If we have a roomId, try to rejoin upon reconnection
+      if (roomId && gameMode === 'online') {
+         console.log('Reconnecting to room:', roomId);
+         socket.emit('join_room', roomId);
+      }
+    };
+    
+    socket.on('connect', handleConnect);
+    return () => {
+      socket.off('connect', handleConnect);
+    };
+  }, [roomId, gameMode]);
+
   const startGame = (mode: GameMode, diff?: Difficulty) => {
     setGameMode(mode);
     if (diff) setDifficulty(diff);
     resetGame();
     
     if (mode === 'online') {
-       socket.connect();
+       if (!socket.connected) socket.connect();
        // Don't switch view yet, wait for room selection
     } else {
        setView('game');
@@ -148,23 +166,46 @@ function App() {
         setPlayerColor('w');
     });
 
-    socket.on('game_start', ({  black }: { white: string; black: string }) => {
+    socket.on('game_start', ({ white, black, fen: serverFen }: { white: string; black: string, fen?: string }) => {
         setIsOnlineGameStarted(true);
         setView('game');
-        // If I am not white (creator), I am black
+        
+        // Determine color based on socket ID
         if (socket.id === black) {
             setPlayerColor('b');
+        } else if (socket.id === white) {
+             setPlayerColor('w');
+        }
+
+        // Apply server state if provided (useful for reconnections)
+        if (serverFen) {
+             game.load(serverFen);
+             setFen(serverFen);
+             // TODO: Ideally we should also reconstruct captured pieces from FEN or history here
         }
     });
 
-    socket.on('move_received', ({ move }: { move: { from: string; to: string; promotion?: string }; fen: string }) => {
+    socket.on('move_received', ({ move, fen: newFen }: { move: { from: string; to: string; promotion?: string }; fen: string }) => {
         // Apply move from opponent
-        game.move(move);
-        setFen(game.fen());
-        // Handle sounds
-        if (game.isGameOver()) soundEngine.playGameEnd();
-        else if (game.inCheck()) soundEngine.playCheck();
-        else soundEngine.playMove(); // Simplified sound for remote move
+        try {
+            game.move(move); 
+            // OR use load(newFen) to be safer against desync, but move() allows animation/sound detection
+            // Verify sync
+            if (game.fen() !== newFen) {
+                console.warn('FEN desync detected, correcting...');
+                game.load(newFen);
+            }
+            setFen(game.fen());
+            
+            // Handle sounds
+            if (game.isGameOver()) soundEngine.playGameEnd();
+            else if (game.inCheck()) soundEngine.playCheck();
+            else soundEngine.playMove();
+        } catch(e) {
+            console.error('Move received error:', e);
+            game.load(newFen); // Fallback force sync
+            setFen(newFen);
+        }
     });
 
     socket.on('error', (msg: string) => {
